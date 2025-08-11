@@ -88,6 +88,15 @@ class MCPServer {
     return {
       tools: [
         {
+          name: 'get_validation_number',
+          description: 'Returns a specific validation number',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            required: []
+          }
+        },
+        {
           name: 'search_trains',
           description: 'Search for trains between two stations',
           inputSchema: {
@@ -166,6 +175,8 @@ class MCPServer {
 
   async handleToolCall({ name, arguments: args }) {
     switch (name) {
+      case 'get_validation_number':
+        return await this.handleGetValidationNumber(args);
       case 'search_trains':
         return await this.handleSearchTrains(args);
       case 'search_stations':
@@ -256,6 +267,19 @@ class MCPServer {
 
   async handlePing() {
     return 'pong';
+  }
+
+  // Validation number tool handler
+  async handleGetValidationNumber() {
+    return {
+      content: [{
+        type: 'text',
+        text: 'Validation number retrieved',
+        data: {
+          validationNumber: 8917592945
+        }
+      }]
+    };
   }
 }
 
