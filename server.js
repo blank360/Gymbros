@@ -363,329 +363,55 @@ app.get('/', (req, res) => {
     version: '1.0.0'
   });
 });
+// Helper function to format dates in Indian standard
+const formatToIndianDateTime = (isoString) => {
+  if (!isoString) return 'N/A';
+  const date = new Date(isoString);
+  return {
+    date: date.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }),
+    time: date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
+  };
+};
 
-// IRCTC Train API Routes
-
-// Search for stations
-app.get('/api/trains/stations', auth, async (req, res) => {
-  try {
-    const { query } = req.query;
-    if (!query || query.length < 2) {
-      return res.status(400).json({ 
-        status: false, 
-        message: 'Please provide a search query with at least 2 characters' 
-      });
-    }
-    const result = await searchStation(query);
-    res.json({
-      status: true,
-      data: result
-    });
-  } catch (error) {
-    console.error('Station search error:', error);
-    res.status(500).json({ 
-      status: false, 
-      message: 'Failed to search stations',
-      error: error.message 
-    });
-  }
-});
-
-// Search for trains between stations
-app.get('/api/trains/between-stations', async (req, res) => {
-  try {
-    let { from, to, date } = req.query;
-    
-    if (!from || !to) {
-      return res.status(400).json({ 
-        status: false, 
-        message: 'Please provide both source (from) and destination (to) station codes' 
-      });
-    }
-
-    // Convert date to Date object if provided, otherwise use current date
-    const searchDate = date ? new Date(date) : new Date();
-    
-    // Get trains between stations with the specified date
-    const trains = await getTrainsBetweenStations(from, to, searchDate);
-    
-    res.json({
-      status: true,
-      searchParams: { 
-        from, 
-        to, 
-        date: searchDate.toISOString().split('T')[0] 
-      },
-      totalResults: Array.isArray(trains) ? trains.length : 0,
-      data: trains || []
-    });
-  } catch (error) {
-    console.error('Train search error:', error);
-    res.status(500).json({ 
-      status: false, 
-      message: 'Failed to fetch trains',
-      error: error.message 
-    });
-  }
-});
-
-// Get train schedule
-app.get('/api/trains/schedule/:trainNo', async (req, res) => {
-  try {
-    const { trainNo } = req.params;
-    const schedule = await getTrainSchedule(trainNo);
-    
-    res.json({
-      status: true,
-      trainNo,
-      data: schedule
-    });
-  } catch (error) {
-    console.error('Train schedule error:', error);
-    res.status(500).json({ 
-      status: false, 
-      message: 'Failed to fetch train schedule',
-      error: error.message 
-    });
-  }
-});
-
-// Check seat availability
-app.get('/api/trains/check-availability', async (req, res) => {
-  try {
-    const { trainNo, from, to, class: classType = '3A', quota = 'GN' } = req.query;
-    
-    if (!trainNo || !from || !to) {
-      return res.status(400).json({ 
-        status: false, 
-        message: 'Please provide train number, from and to station codes' 
-      });
-    }
-
-    const availability = await checkSeatAvailability(
-      trainNo, 
-      from, 
-      to, 
-      classType, 
-      quota
-    );
-    
-    res.json({
-      status: true,
-      searchParams: { trainNo, from, to, class: classType, quota },
-      data: availability
-    });
-  } catch (error) {
-    console.error('Seat availability error:', error);
-    res.status(500).json({ 
-      status: false, 
-      message: 'Failed to check seat availability',
-      error: error.message 
-    });
-  }
-});
-
-// Get PNR status
-app.get('/api/trains/pnr/:pnr', async (req, res) => {
-  try {
-    const { pnr } = req.params;
-    const status = await getPNRStatus(pnr);
-    
-    res.json({
-      status: true,
-      pnr,
-      data: status
-    });
-  } catch (error) {
-    console.error('PNR status error:', error);
-    res.status(500).json({ 
-      status: false, 
-      message: 'Failed to fetch PNR status',
-      error: error.message 
-    });
-  }
-});
-
-// Flight Deals Search Endpoint
-app.get('/api/flights/deals', async (req, res) => {
-  const { query = 'DEL', limit = '10' } = req.query;
+// Helper function to convert currency to INR
+const convertToINR = (amount, fromCurrency = 'USD') => {
+  if (amount === undefined || amount === null) return null;
+  const exchangeRates = {
+    'USD': 87.6427,
+    'EUR': 95.1234,
+    'GBP': 109.8765,
+    'SGD': 64.3210,
+    'AED': 23.8654,
+    'AUD': 57.89,
+    'CAD': 64.32
+  };
   
-  try {
-    const response = await getFlightDeals(query, limit);
+  const rate = exchangeRates[fromCurrency.toUpperCase()] || 1;
+  return Math.round(amount * rate);
+};
 
-    // Format the response with Indian standards
-    const formatToIndianDateTime = (isoString) => {
-      if (!isoString) return 'N/A';
-      const date = new Date(isoString);
-      return {
-        date: date.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }),
-        time: date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
-      };
-    };
+// Format currency in Indian format
+const formatToIndianCurrency = (amount, currency = 'INR') => {
+  if (amount === undefined || amount === null) return 'N/A';
+  const amountInINR = currency.toUpperCase() === 'INR' 
+    ? amount 
+    : convertToINR(amount, currency);
+  
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  }).format(amountInINR);
+};
 
-    const convertToINR = (amount, fromCurrency = 'USD') => {
-      if (amount === undefined || amount === null) return null;
-      const exchangeRates = {
-        'USD': 87.6427,
-        'EUR': 95.35,
-        'GBP': 111.45,
-        'AED': 23.86,
-        'SGD': 64.25,
-        'AUD': 57.89,
-        'CAD': 64.32
-      };
-      
-      const rate = exchangeRates[fromCurrency.toUpperCase()] || 1;
-      return Math.round(amount * rate);
-    };
-
-    const formatToIndianCurrency = (amount, currency = 'INR') => {
-      if (amount === undefined || amount === null) return 'N/A';
-      
-      const amountInINR = currency.toUpperCase() === 'INR' 
-        ? amount 
-        : convertToINR(amount, currency);
-      
-      return new Intl.NumberFormat('en-IN', {
-        style: 'currency',
-        currency: 'INR',
-        minimumFractionDigits: 0,
-        maximumFractionDigits: 0
-      }).format(amountInINR);
-    };
-
-    const formatDuration = (minutes) => {
-      if (!minutes) return 'N/A';
-      const hrs = Math.floor(minutes / 60);
-      const mins = minutes % 60;
-      return `${hrs}h ${mins}m`;
-    };
-
-    const formattedResponse = {
-      status: response.status,
-      totalResults: response.data?.totalResultCount || 0,
-      deals: response.data?.itineraries?.map(deal => ({
-        id: deal.id,
-        origin: {
-          code: deal.source?.code || 'N/A',
-          name: deal.source?.name || 'N/A',
-          city: deal.source?.city?.name || 'N/A',
-          country: deal.source?.city?.country?.name || 'India'
-        },
-        destination: {
-          code: deal.destination?.code || 'N/A',
-          name: deal.destination?.name || 'N/A',
-          city: deal.destination?.city?.name || 'N/A',
-          country: deal.destination?.city?.country?.name || 'India'
-        },
-        departure: formatToIndianDateTime(deal.departureTime),
-        arrival: formatToIndianDateTime(deal.arrivalTime),
-        duration: formatDuration(deal.duration),
-        price: {
-          amount: formatToIndianCurrency(deal.price?.amount, deal.price?.currency),
-          originalAmount: deal.price?.amount,
-          originalCurrency: deal.price?.currency || 'USD',
-          convertedAmount: convertToINR(deal.price?.amount, deal.price?.currency) || 0,
-          currency: 'INR'
-        },
-        airline: deal.legs?.[0]?.carrier?.name || 'N/A',
-        flightNumber: deal.legs?.[0]?.flightNumber || 'N/A',
-        stops: deal.legs?.[0]?.stopCount || 0,
-        stopInfo: deal.legs?.[0]?.stopCount === 0 ? 'Non-stop' : 
-                 `${deal.legs?.[0]?.stopCount} ${deal.legs?.[0]?.stopCount === 1 ? 'stop' : 'stops'}`,
-        deepLink: deal.deeplink || '#'
-      })) || []
-    };
-
-    res.json(formattedResponse);
-  } catch (error) {
-    console.error('Error fetching flight data:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch flight data',
-      details: error.message 
-    });
-  }
-});
-
-// Natural language query endpoint
-app.post('/ask', async (req, res) => {
-  try {
-    const { query } = req.body;
-    
-    if (!query) {
-      return res.status(400).json({ 
-        status: false, 
-        message: 'Query is required' 
-      });
-    }
-
-    const lowerQuery = query.toLowerCase();
-    
-    // Handle flight-related queries
-    if (lowerQuery.includes('flight')) {
-      if (lowerQuery.includes('delayed')) {
-        const delayedFlights = flights.filter(f => f.status === 'Delayed');
-        return res.json({ 
-          status: true, 
-          message: 'Here are the delayed flights:', 
-          data: delayedFlights 
-        });
-      }
-      return res.json({ 
-        status: true, 
-        message: 'Here are the available flights:', 
-        data: flights 
-      });
-    }
-    
-    // Handle train-related queries
-    if (lowerQuery.includes('train')) {
-      const fromMatch = lowerQuery.match(/from\s+(\w+)/);
-      const toMatch = lowerQuery.match(/to\s+(\w+)/);
-      
-      if (fromMatch && toMatch) {
-        const from = fromMatch[1].toUpperCase();
-        const to = toMatch[1].toUpperCase();
-        
-        try {
-          const trains = await getTrainsBetweenStations(from, to);
-          return res.json({
-            status: true,
-            message: `Here are the trains from ${from} to ${to}:`,
-            data: trains
-          });
-        } catch (error) {
-          console.error('Error fetching trains:', error);
-          return res.status(500).json({
-            status: false,
-            message: 'Failed to fetch train information',
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
-          });
-        }
-      }
-      
-      return res.json({
-        status: true,
-        message: 'Please specify source and destination stations, e.g., "trains from delhi to mumbai"',
-        data: []
-      });
-    }
-    
-    res.json({ 
-      status: true, 
-      message: 'I can help you with flight and train information. Try asking about trains or flights.',
-      data: []
-    });
-    
-  } catch (error) {
-    console.error('Error in /ask endpoint:', error);
-    res.status(500).json({
-      status: false,
-      message: 'An error occurred while processing your request',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
+// Format duration in hours and minutes
+const formatDuration = (minutes) => {
+  if (!minutes) return 'N/A';
+  const hrs = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${hrs}h ${mins}m`;
+};
 
 // Global error handler
 app.use((err, req, res, next) => {
