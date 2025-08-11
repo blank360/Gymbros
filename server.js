@@ -30,9 +30,47 @@ app.post('/mcp', (req, res) => {
     console.log('Headers:', req.headers);
     console.log('Content-Type:', req.get('content-type'));
     console.log('Body type:', typeof req.body);
-    console.log('Raw body:', req.body);
     
     let payload = req.body;
+    
+    // Handle the case where the body is a string that might be double-stringified JSON
+    if (typeof req.body === 'string') {
+      try {
+        // First, try to parse it normally
+        payload = JSON.parse(req.body);
+        
+        // If the parsed result is still a string, it might be double-stringified
+        if (typeof payload === 'string') {
+          try {
+            // Try to parse it again
+            payload = JSON.parse(payload);
+          } catch (innerError) {
+            console.log('Failed to parse inner JSON, using as-is');
+          }
+        }
+      } catch (parseError) {
+        console.log('Failed to parse JSON, treating as raw string');
+        // If we can't parse it, try to clean it up and parse again
+        try {
+          const cleanedBody = req.body
+            .replace(/^"+|"+$/g, '') // Remove surrounding quotes
+            .replace(/\\"/g, '"')     // Unescape quotes
+            .replace(/\\\\/g, '\\'); // Fix escaped backslashes
+          payload = JSON.parse(cleanedBody);
+        } catch (cleanError) {
+          console.error('Failed to clean and parse JSON:', cleanError);
+          return res.status(400).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32700,
+              message: "Parse error",
+              data: `Failed to parse request: ${cleanError.message}`
+            },
+            id: null
+          });
+        }
+      }
+    }
     
     // Handle the case where body might be a string (shouldn't happen with express.json())
     if (typeof req.body === 'string') {
