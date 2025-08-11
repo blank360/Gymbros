@@ -48,6 +48,6 @@ export const mcpAuth = (req, res, next) => {
   next();
 };
 
-export { mcpAuth, BEARER_TOKEN };
+export { BEARER_TOKEN };
 
 export default mcpAuth;
