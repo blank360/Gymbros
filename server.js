@@ -1,36 +1,21 @@
 import 'dotenv/config';
 import express from 'express';
-import cors from 'cors';
 import dotenv from 'dotenv';
-import https from 'https';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
 import { searchStation, getTrainsBetweenStations, getTrainSchedule, checkSeatAvailability, getPNRStatus } from './irctcService.js';
 import { mcpAuth } from './auth.js';
 
 // Load environment variables
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Sample flight data
-const flights = [
-  { id: 1, flightNumber: 'AI101', from: 'DEL', to: 'BOM', departure: '08:00', arrival: '10:00', status: 'On Time' },
-  { id: 2, flightNumber: '6E456', from: 'BOM', to: 'BLR', departure: '14:30', arrival: '16:15', status: 'Delayed' },
-  { id: 3, flightNumber: 'UK789', from: 'BLR', to: 'DEL', departure: '18:00', arrival: '20:30', status: 'On Time' }
-];
-
 // Middleware
-app.use(cors());
-app.use(express.json({ strict: false })); // Allow non-strict JSON parsing
+app.use(express.json({ strict: false }));
 
-// Log all requests
+// Request logger
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
 });
 
@@ -341,110 +326,112 @@ app.post('/mcp', mcpAuth, async (req, res) => {
   }
 });
 
-// Health check endpoint (required for Render)
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'OK',
-    service: 'MCP Train & Flight Server',
-    timestamp: new Date().toISOString(),
-    version: '1.0.0'
-  });
+// MCP protocol endpoint
+app.post('/mcp', mcpAuth, async (req, res) => {
+  try {
+    let payload = req.body;
+    
+    // Handle string payload (in case it's double-stringified)
+    if (typeof payload === 'string') {
+      try {
+        payload = JSON.parse(payload);
+        // Handle case where the parsed payload is still a string
+        if (typeof payload === 'string') {
+          try {
+            payload = JSON.parse(payload);
+          } catch (e) {
+            // If second parse fails, use the string as is
+          }
+        }
+      } catch (e) {
+        // If parsing fails, try to clean up the string
+        try {
+          const cleaned = payload
+            .replace(/^"+|"+$/g, '')
+            .replace(/\\"/g, '"')
+            .replace(/\\\\/g, '\\\\');
+          payload = JSON.parse(cleaned);
+        } catch (cleanError) {
+          return res.status(400).json({
+            jsonrpc: '2.0',
+            error: {
+              code: -32700,
+              message: 'Parse error',
+              data: `Invalid JSON: ${cleanError.message}`
+            },
+            id: null
+          });
+        }
+      }
+    }
+    
+    // Handle batch requests (array of requests)
+    if (Array.isArray(payload)) {
+      const results = await Promise.all(
+        payload.map(request => mcpServer.handleRequest(request))
+      );
+      return res.json(results);
+    }
+    
+    // Handle single request
+    const response = await mcpServer.handleRequest(payload);
+    res.json(response);
+  } catch (error) {
+    console.error('MCP request error:', error);
+    res.status(500).json({
+      jsonrpc: '2.0',
+      error: {
+        code: -32603,
+        message: 'Internal error',
+        data: error.message
+      },
+      id: null
+    });
+  }
 });
-
-// Simple root endpoint
-app.get('/', (req, res) => {
-  res.json({
-    status: 'success',
-    message: 'MCP Train & Flight Server is running',
-    endpoints: {
-      mcp: 'POST /mcp - MCP protocol endpoint',
-      health: 'GET /health - Health check endpoint'
-    },
-    version: '1.0.0'
-  });
-});
-// Helper function to format dates in Indian standard
-const formatToIndianDateTime = (isoString) => {
-  if (!isoString) return 'N/A';
-  const date = new Date(isoString);
-  return {
-    date: date.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }),
-    time: date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
-  };
-};
-
-// Helper function to convert currency to INR
-const convertToINR = (amount, fromCurrency = 'USD') => {
-  if (amount === undefined || amount === null) return null;
-  const exchangeRates = {
-    'USD': 87.6427,
-    'EUR': 95.1234,
-    'GBP': 109.8765,
-    'SGD': 64.3210,
-    'AED': 23.8654,
-    'AUD': 57.89,
-    'CAD': 64.32
-  };
-  
-  const rate = exchangeRates[fromCurrency.toUpperCase()] || 1;
-  return Math.round(amount * rate);
-};
-
-// Format currency in Indian format
-const formatToIndianCurrency = (amount, currency = 'INR') => {
-  if (amount === undefined || amount === null) return 'N/A';
-  const amountInINR = currency.toUpperCase() === 'INR' 
-    ? amount 
-    : convertToINR(amount, currency);
-  
-  return new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: 'INR',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0
-  }).format(amountInINR);
-};
-
-// Format duration in hours and minutes
-const formatDuration = (minutes) => {
-  if (!minutes) return 'N/A';
-  const hrs = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  return `${hrs}h ${mins}m`;
-};
-
-// Global error handler
+// MCP Server Error Handler
 app.use((err, req, res, next) => {
-  console.error('Global error handler:', err);
+  console.error('MCP Server Error:', err);
   
-  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
-    return res.status(400).json({
-      status: 'error',
-      message: 'Invalid JSON payload',
-      details: 'The request body contains invalid JSON'
+  if (err instanceof SyntaxError && 'body' in err) {
+    return res.status(200).json({
+      jsonrpc: '2.0',
+      error: {
+        code: -32700,
+        message: 'Parse error',
+        data: 'Invalid JSON was received by the server.'
+      },
+      id: null
     });
   }
 
-  res.status(500).json({
-    status: 'error',
-    message: 'Internal server error',
-    error: process.env.NODE_ENV === 'development' ? err.message : undefined
+  res.status(200).json({
+    jsonrpc: '2.0',
+    error: {
+      code: -32603,
+      message: 'Internal error',
+      data: process.env.NODE_ENV === 'development' ? err.message : undefined
+    },
+    id: null
   });
 });
 
-// 404 handler
+// 404 handler - Return JSON-RPC 2.0 error for unknown methods
 app.use((req, res) => {
-  res.status(404).json({
-    status: 'error',
-    message: 'Endpoint not found',
-    path: req.path
+  res.status(200).json({
+    jsonrpc: '2.0',
+    error: {
+      code: -32601,
+      message: 'Method not found',
+      data: `The method '${req.path}' does not exist.`
+    },
+    id: null
   });
 });
 
-// Start the server
+// Start the MCP server
 app.listen(PORT, () => {
-  console.log(`🚀 MCP Train & Flight Server is running on http://localhost:${PORT}`);
+  console.log(`🚀 MCP Server is running on http://localhost:${PORT}`);
   console.log(`📋 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔧 MCP endpoint available at: POST /mcp`);
-  console.log(`💡 Health check available at: GET /health`);
+  console.log(`🔧 MCP endpoint: POST http://localhost:${PORT}/mcp`);
 });
