@@ -10,7 +10,73 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+
+// Custom JSON parser with better error handling
+app.use(express.json({
+  verify: (req, res, buf, encoding) => {
+    try {
+      if (buf && buf.length) {
+        JSON.parse(buf.toString(encoding || 'utf8'));
+      }
+    } catch (e) {
+      console.error('JSON parse error:', e);
+      throw new Error('Invalid JSON payload');
+    }
+  }
+}));
+
+// Log all requests
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  if (Object.keys(req.body).length > 0) {
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+  }
+  next();
+});
+
+// MCP endpoint handler
+app.post('/mcp', express.text({ type: '*/*' }), (req, res) => {
+  try {
+    console.log('Raw MCP request body:', req.body);
+    
+    // Try to parse the body as JSON if it's a string
+    let payload;
+    if (typeof req.body === 'string') {
+      try {
+        // Remove any escaping of quotes
+        const cleanBody = req.body.replace(/\\"/g, '"');
+        payload = JSON.parse(cleanBody);
+      } catch (e) {
+        console.error('Failed to parse MCP request as JSON:', e);
+        return res.status(400).json({
+          status: 'error',
+          message: 'Invalid MCP request format',
+          details: e.message
+        });
+      }
+    } else {
+      payload = req.body;
+    }
+
+    console.log('Parsed MCP payload:', payload);
+    
+    // Process the MCP request here
+    // Example response - replace with your MCP logic
+    res.json({
+      status: 'success',
+      message: 'MCP request received',
+      received: payload
+    });
+    
+  } catch (error) {
+    console.error('MCP handler error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to process MCP request',
+      error: error.message
+    });
+  }
+});
 
 // Simple auth endpoint to verify the token is working
 app.get('/api/auth/verify', auth, (req, res) => {
@@ -610,7 +676,36 @@ app.get('/api/flights/deals', async (req, res) => {
   }
 });
 
-// Start server
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error('Global error handler:', err);
+  
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Invalid JSON payload',
+      details: 'The request body contains invalid JSON'
+    });
+  }
+
+  res.status(500).json({
+    status: 'error',
+    message: 'Internal server error',
+    error: process.env.NODE_ENV === 'development' ? err.message : undefined
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    status: 'error',
+    message: 'Endpoint not found',
+    path: req.path
+  });
+});
+
+// Start the server
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
