@@ -73,4 +73,8 @@ const legacyAuth = (req, res, next) => {
   next();
 };
 
-export { mcpAuth as auth, legacyAuth, BEARER_TOKEN };
+// Export all named exports
+export { mcpAuth, legacyAuth, BEARER_TOKEN };
+
+// For backward compatibility, keep the default export as mcpAuth
+export default mcpAuth;
