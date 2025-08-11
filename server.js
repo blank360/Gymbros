@@ -1,70 +1,314 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import dotenv from 'dotenv';
 import https from 'https';
-import { searchStation, searchTrain, getTrainsBetweenStations, getPNRStatus, getTrainSchedule, getTrainsByStation, checkSeatAvailability } from './irctcService.js';
-import { auth } from './auth.js';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+import { searchStation, getTrainsBetweenStations, getTrainSchedule, checkSeatAvailability, getPNRStatus } from './irctcService.js';
+import { mcpAuth } from './auth.js';
+
+// Load environment variables
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
+
+// Sample flight data
+const flights = [
+  { id: 1, flightNumber: 'AI101', from: 'DEL', to: 'BOM', departure: '08:00', arrival: '10:00', status: 'On Time' },
+  { id: 2, flightNumber: '6E456', from: 'BOM', to: 'BLR', departure: '14:30', arrival: '16:15', status: 'Delayed' },
+  { id: 3, flightNumber: 'UK789', from: 'BLR', to: 'DEL', departure: '18:00', arrival: '20:30', status: 'On Time' }
+];
 
 // Middleware
 app.use(cors());
-
-// Use simple JSON parsing without custom verification
-app.use(express.json());
+app.use(express.json({ strict: false })); // Allow non-strict JSON parsing
 
 // Log all requests
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
-  if (Object.keys(req.body || {}).length > 0) {
-    console.log('Request body:', JSON.stringify(req.body, null, 2));
-  }
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
   next();
 });
 
-// MCP endpoint handler - FIXED VERSION
-app.post('/mcp', (req, res) => {
-  try {
-    console.log('MCP request received');
-    console.log('Headers:', req.headers);
-    console.log('Content-Type:', req.get('content-type'));
-    console.log('Body type:', typeof req.body);
+// MCP Server Implementation
+class MCPServer {
+  constructor() {
+    this.methods = new Map();
+    this.initializeMethods();
+  }
+
+  initializeMethods() {
+    // Register all available methods
+    this.registerMethod('initialize', this.handleInitialize.bind(this));
+    this.registerMethod('tools/list', this.handleToolsList.bind(this));
+    this.registerMethod('tools/call', this.handleToolCall.bind(this));
+    this.registerMethod('notifications/initialized', this.handleInitialized.bind(this));
+    this.registerMethod('ping', this.handlePing.bind(this));
+  }
+
+  registerMethod(name, handler) {
+    this.methods.set(name, handler);
+  }
+
+  async handleRequest(payload) {
+    const { jsonrpc, method, params, id } = payload;
     
-    let payload = req.body;
-    
-    // Handle the case where the body is a string that might be double-stringified JSON
-    if (typeof req.body === 'string') {
-      try {
-        // First, try to parse it normally
-        payload = JSON.parse(req.body);
-        
-        // If the parsed result is still a string, it might be double-stringified
-        if (typeof payload === 'string') {
-          try {
-            // Try to parse it again
-            payload = JSON.parse(payload);
-          } catch (innerError) {
-            console.log('Failed to parse inner JSON, using as-is');
+    if (jsonrpc !== '2.0') {
+      throw new Error('Invalid JSON-RPC version');
+    }
+
+    const handler = this.methods.get(method);
+    if (!handler) {
+      throw new Error(`Method not found: ${method}`);
+    }
+
+    try {
+      const result = await handler(params || {});
+      return { jsonrpc: '2.0', result, id };
+    } catch (error) {
+      return {
+        jsonrpc: '2.0',
+        error: {
+          code: error.code || -32603,
+          message: error.message || 'Internal error',
+          data: error.data
+        },
+        id
+      };
+    }
+  }
+
+  // MCP Method Handlers
+  async handleInitialize() {
+    return {
+      protocolVersion: '2024-11-05',
+      capabilities: {
+        tools: { listChanged: false },
+        resources: { subscribe: false, listChanged: false },
+        prompts: { listChanged: false },
+        logging: {}
+      },
+      serverInfo: {
+        name: 'mcp-train-flight-server',
+        version: '1.0.0'
+      }
+    };
+  }
+
+  async handleToolsList() {
+    return {
+      tools: [
+        {
+          name: 'search_trains',
+          description: 'Search for trains between two stations',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              from: { type: 'string', description: 'Source station code or name' },
+              to: { type: 'string', description: 'Destination station code or name' },
+              date: { type: 'string', description: 'Travel date (YYYY-MM-DD)' }
+            },
+            required: ['from', 'to']
+          }
+        },
+        {
+          name: 'search_stations',
+          description: 'Search for railway stations',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: 'Station name or code to search' }
+            },
+            required: ['query']
+          }
+        },
+        {
+          name: 'get_pnr_status',
+          description: 'Get PNR status for a train ticket',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              pnr: { type: 'string', description: '10-digit PNR number' }
+            },
+            required: ['pnr']
+          }
+        },
+        {
+          name: 'get_train_schedule',
+          description: 'Get detailed schedule for a train',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              trainNo: { type: 'string', description: 'Train number' }
+            },
+            required: ['trainNo']
+          }
+        },
+        {
+          name: 'check_seat_availability',
+          description: 'Check seat availability for a train',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              trainNo: { type: 'string', description: 'Train number' },
+              from: { type: 'string', description: 'Source station code' },
+              to: { type: 'string', description: 'Destination station code' },
+              classType: { type: 'string', description: 'Class type (SL, 3A, 2A, 1A)' },
+              quota: { type: 'string', description: 'Quota type (GN, TQ, etc.)' }
+            },
+            required: ['trainNo', 'from', 'to']
+          }
+        },
+        {
+          name: 'search_flights',
+          description: 'Search for flight deals',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: 'Origin airport code or city' },
+              limit: { type: 'string', description: 'Number of results to return' }
+            },
+            required: ['query']
           }
         }
-      } catch (parseError) {
-        console.log('Failed to parse JSON, treating as raw string');
-        // If we can't parse it, try to clean it up and parse again
+      ]
+    };
+  }
+
+  async handleToolCall({ name, arguments: args }) {
+    switch (name) {
+      case 'search_trains':
+        return await this.handleSearchTrains(args);
+      case 'search_stations':
+        return await this.handleSearchStations(args);
+      case 'get_pnr_status':
+        return await this.handleGetPNRStatus(args);
+      case 'get_train_schedule':
+        return await this.handleGetTrainSchedule(args);
+      case 'check_seat_availability':
+        return await this.handleCheckSeatAvailability(args);
+      case 'search_flights':
+        return await this.handleSearchFlights(args);
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  }
+
+  async handleSearchTrains({ from, to, date }) {
+    const trains = await getTrainsBetweenStations(from, to, date);
+    return {
+      content: [{
+        type: 'text',
+        text: `Found ${trains.length} trains from ${from} to ${to}`,
+        data: trains
+      }]
+    };
+  }
+
+  async handleSearchStations({ query }) {
+    const stations = await searchStation(query);
+    return {
+      content: [{
+        type: 'text',
+        text: `Found ${stations.length} stations matching '${query}'`,
+        data: stations
+      }]
+    };
+  }
+
+  async handleGetPNRStatus({ pnr }) {
+    const status = await getPNRStatus(pnr);
+    return {
+      content: [{
+        type: 'text',
+        text: `PNR Status for ${pnr}`,
+        data: status
+      }]
+    };
+  }
+
+  async handleGetTrainSchedule({ trainNo }) {
+    const schedule = await getTrainSchedule(trainNo);
+    return {
+      content: [{
+        type: 'text',
+        text: `Schedule for train ${trainNo}`,
+        data: schedule
+      }]
+    };
+  }
+
+  async handleCheckSeatAvailability({ trainNo, from, to, classType = '3A', quota = 'GN' }) {
+    const availability = await checkSeatAvailability(trainNo, from, to, classType, quota);
+    return {
+      content: [{
+        type: 'text',
+        text: `Seat availability for train ${trainNo}`,
+        data: availability
+      }]
+    };
+  }
+
+  async handleSearchFlights({ query, limit }) {
+    const flightDeals = await getFlightDeals(query, limit);
+    return {
+      content: [{
+        type: 'text',
+        text: `Found ${flightDeals.length} flight deals from ${query}`,
+        data: flightDeals
+      }]
+    };
+  }
+
+  async handleInitialized() {
+    // No response needed for notifications
+    return null;
+  }
+
+  async handlePing() {
+    return 'pong';
+  }
+}
+
+// Create MCP server instance
+const mcpServer = new MCPServer();
+
+// MCP endpoint handler with authentication
+app.post('/mcp', mcpAuth, async (req, res) => {
+  try {
+    let payload = req.body;
+    
+    // Handle string payload (in case it's double-stringified)
+    if (typeof payload === 'string') {
+      try {
+        payload = JSON.parse(payload);
+        // Handle case where the parsed payload is still a string
+        if (typeof payload === 'string') {
+          try {
+            payload = JSON.parse(payload);
+          } catch (e) {
+            // If second parse fails, use the string as is
+          }
+        }
+      } catch (e) {
+        // If parsing fails, try to clean up the string
         try {
-          const cleanedBody = req.body
-            .replace(/^"+|"+$/g, '') // Remove surrounding quotes
-            .replace(/\\"/g, '"')     // Unescape quotes
-            .replace(/\\\\/g, '\\'); // Fix escaped backslashes
-          payload = JSON.parse(cleanedBody);
+          const cleaned = payload
+            .replace(/^"+|"+$/g, '')
+            .replace(/\\"/g, '"')
+            .replace(/\\\\/g, '\\');
+          payload = JSON.parse(cleaned);
         } catch (cleanError) {
-          console.error('Failed to clean and parse JSON:', cleanError);
           return res.status(400).json({
-            jsonrpc: "2.0",
+            jsonrpc: '2.0',
             error: {
               code: -32700,
-              message: "Parse error",
-              data: `Failed to parse request: ${cleanError.message}`
+              message: 'Parse error',
+              data: `Invalid JSON: ${cleanError.message}`
             },
             id: null
           });
@@ -72,190 +316,24 @@ app.post('/mcp', (req, res) => {
       }
     }
     
-    // Handle the case where body might be a string (shouldn't happen with express.json())
-    if (typeof req.body === 'string') {
-      try {
-        payload = JSON.parse(req.body);
-      } catch (parseError) {
-        console.error('Failed to parse string body:', parseError);
-        return res.status(400).json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32700,
-            message: "Parse error",
-            data: parseError.message
-          },
-          id: null
-        });
-      }
+    // Handle batch requests (array of requests)
+    if (Array.isArray(payload)) {
+      const results = await Promise.all(
+        payload.map(request => mcpServer.handleRequest(request))
+      );
+      return res.json(results);
     }
-
-    console.log('Processed payload:', payload);
     
-    // Handle MCP-specific request structure
-    if (payload && payload.method) {
-      switch (payload.method) {
-        case 'ping':
-          console.log('Handling ping request');
-          return res.json({
-            jsonrpc: "2.0",
-            result: "pong",
-            id: payload.id
-          });
-          
-        case 'initialize':
-          console.log('Handling initialize request');
-          return res.json({
-            jsonrpc: "2.0",
-            result: {
-              protocolVersion: "2024-11-05",
-              capabilities: {
-                tools: {
-                  listChanged: false
-                },
-                resources: {
-                  subscribe: false,
-                  listChanged: false
-                },
-                prompts: {
-                  listChanged: false
-                },
-                logging: {}
-              },
-              serverInfo: {
-                name: "mcp-train-flight-server",
-                version: "1.0.1"
-              }
-            },
-            id: payload.id
-          });
-          
-        case 'notifications/initialized':
-          console.log('Handling initialized notification');
-          // This is a notification, don't send a response
-          return res.status(200).end();
-          
-        case 'tools/list':
-          console.log('Handling tools/list request');
-          return res.json({
-            jsonrpc: "2.0",
-            result: {
-              tools: [
-                {
-                  name: "search_trains",
-                  description: "Search for trains between two stations",
-                  inputSchema: {
-                    type: "object",
-                    properties: {
-                      from: { type: "string", description: "Source station code or name" },
-                      to: { type: "string", description: "Destination station code or name" },
-                      date: { type: "string", description: "Travel date (YYYY-MM-DD)" }
-                    },
-                    required: ["from", "to"]
-                  }
-                },
-                {
-                  name: "search_stations",
-                  description: "Search for railway stations",
-                  inputSchema: {
-                    type: "object",
-                    properties: {
-                      query: { type: "string", description: "Station name or code to search" }
-                    },
-                    required: ["query"]
-                  }
-                },
-                {
-                  name: "get_pnr_status",
-                  description: "Get PNR status for a train ticket",
-                  inputSchema: {
-                    type: "object",
-                    properties: {
-                      pnr: { type: "string", description: "10-digit PNR number" }
-                    },
-                    required: ["pnr"]
-                  }
-                },
-                {
-                  name: "get_train_schedule",
-                  description: "Get detailed schedule for a train",
-                  inputSchema: {
-                    type: "object",
-                    properties: {
-                      trainNo: { type: "string", description: "Train number" }
-                    },
-                    required: ["trainNo"]
-                  }
-                },
-                {
-                  name: "check_seat_availability",
-                  description: "Check seat availability for a train",
-                  inputSchema: {
-                    type: "object",
-                    properties: {
-                      trainNo: { type: "string", description: "Train number" },
-                      from: { type: "string", description: "Source station code" },
-                      to: { type: "string", description: "Destination station code" },
-                      classType: { type: "string", description: "Class type (SL, 3A, 2A, 1A)" },
-                      quota: { type: "string", description: "Quota type (GN, TQ, etc.)" }
-                    },
-                    required: ["trainNo", "from", "to"]
-                  }
-                },
-                {
-                  name: "search_flights",
-                  description: "Search for flight deals",
-                  inputSchema: {
-                    type: "object",
-                    properties: {
-                      query: { type: "string", description: "Origin airport code or city" },
-                      limit: { type: "string", description: "Number of results to return" }
-                    },
-                    required: ["query"]
-                  }
-                }
-              ]
-            },
-            id: payload.id
-          });
-
-        case 'tools/call':
-          console.log('Handling tools/call request');
-          return handleToolCall(payload, res);
-          
-        default:
-          console.log('Unknown method:', payload.method);
-          return res.json({
-            jsonrpc: "2.0",
-            error: {
-              code: -32601,
-              message: "Method not found",
-              data: `Unknown method: ${payload.method}`
-            },
-            id: payload.id
-          });
-      }
-    }
-
-    // Fallback response
-    console.log('Sending fallback response');
-    res.json({
-      jsonrpc: "2.0",
-      result: {
-        status: 'success',
-        message: 'MCP request processed',
-        received: payload
-      },
-      id: payload?.id || null
-    });
-    
+    // Handle single request
+    const response = await mcpServer.handleRequest(payload);
+    res.json(response);
   } catch (error) {
-    console.error('MCP handler error:', error);
+    console.error('MCP request error:', error);
     res.status(500).json({
-      jsonrpc: "2.0",
+      jsonrpc: '2.0',
       error: {
         code: -32603,
-        message: "Internal error",
+        message: 'Internal error',
         data: error.message
       },
       id: null
@@ -263,213 +341,26 @@ app.post('/mcp', (req, res) => {
   }
 });
 
-// Handle MCP tool calls
-async function handleToolCall(payload, res) {
-  try {
-    const { name, arguments: args } = payload.params;
-    
-    console.log(`Executing tool: ${name} with args:`, args);
-    
-    switch (name) {
-      case 'search_trains':
-        const trains = await getTrainsBetweenStations(args.from, args.to, args.date);
-        return res.json({
-          jsonrpc: "2.0",
-          result: {
-            content: [{
-              type: "text",
-              text: `Found trains from ${args.from} to ${args.to}:\n${JSON.stringify(trains, null, 2)}`
-            }]
-          },
-          id: payload.id
-        });
-        
-      case 'search_stations':
-        const stations = await searchStation(args.query);
-        return res.json({
-          jsonrpc: "2.0",
-          result: {
-            content: [{
-              type: "text", 
-              text: `Stations matching '${args.query}':\n${JSON.stringify(stations, null, 2)}`
-            }]
-          },
-          id: payload.id
-        });
-        
-      case 'get_pnr_status':
-        const pnrStatus = await getPNRStatus(args.pnr);
-        return res.json({
-          jsonrpc: "2.0",
-          result: {
-            content: [{
-              type: "text",
-              text: `PNR Status for ${args.pnr}:\n${JSON.stringify(pnrStatus, null, 2)}`
-            }]
-          },
-          id: payload.id
-        });
-        
-      case 'get_train_schedule':
-        const schedule = await getTrainSchedule(args.trainNo);
-        return res.json({
-          jsonrpc: "2.0",
-          result: {
-            content: [{
-              type: "text",
-              text: `Schedule for train ${args.trainNo}:\n${JSON.stringify(schedule, null, 2)}`
-            }]
-          },
-          id: payload.id
-        });
-        
-      case 'check_seat_availability':
-        const availability = await checkSeatAvailability(
-          args.trainNo, 
-          args.from, 
-          args.to, 
-          args.classType || '3A', 
-          args.quota || 'GN'
-        );
-        return res.json({
-          jsonrpc: "2.0",
-          result: {
-            content: [{
-              type: "text",
-              text: `Seat availability for ${args.trainNo}:\n${JSON.stringify(availability, null, 2)}`
-            }]
-          },
-          id: payload.id
-        });
-        
-      case 'search_flights':
-        const flightDeals = await getFlightDeals(args.query, args.limit);
-        return res.json({
-          jsonrpc: "2.0",
-          result: {
-            content: [{
-              type: "text",
-              text: `Flight deals from ${args.query}:\n${JSON.stringify(flightDeals, null, 2)}`
-            }]
-          },
-          id: payload.id
-        });
-        
-      default:
-        return res.json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32601,
-            message: "Tool not found",
-            data: `Unknown tool: ${name}`
-          },
-          id: payload.id
-        });
-    }
-  } catch (error) {
-    console.error('Tool execution error:', error);
-    return res.json({
-      jsonrpc: "2.0",
-      error: {
-        code: -32603,
-        message: "Tool execution failed",
-        data: error.message
-      },
-      id: payload.id
-    });
-  }
-}
-
-// Flight deals helper function
-async function getFlightDeals(query = 'DEL', limit = '10') {
-  return new Promise((resolve, reject) => {
-    const options = {
-      method: 'GET',
-      hostname: 'flights-scraper-real-time.p.rapidapi.com',
-      path: `/deals/search?query=${encodeURIComponent(query)}&limit=${limit}`,
-      headers: {
-        'x-rapidapi-key': process.env.RAPIDAPI_KEY || '4de48af65amsh68e3080b6e8897ap1c3511jsn79a3a35bbc97',
-        'x-rapidapi-host': 'flights-scraper-real-time.p.rapidapi.com'
-      }
-    };
-
-    const req = https.request(options, (apiRes) => {
-      let data = '';
-      apiRes.on('data', (chunk) => {
-        data += chunk;
-      });
-      apiRes.on('end', () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch (e) {
-          resolve(data);
-        }
-      });
-    });
-
-    req.on('error', (error) => {
-      reject(error);
-    });
-
-    req.end();
-  });
-}
-
-// Simple auth endpoint to verify the token is working
-app.get('/api/auth/verify', auth, (req, res) => {
-  res.json({ 
-    status: 'success',
-    message: 'Token is valid',
-    timestamp: new Date().toISOString()
+// Health check endpoint (required for Render)
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'OK',
+    service: 'MCP Train & Flight Server',
+    timestamp: new Date().toISOString(),
+    version: '1.0.0'
   });
 });
 
-// Sample flight data (for reference)
-const flights = [
-  { id: 1, flightNumber: 'AI101', from: 'DEL', to: 'BOM', departure: '08:00', arrival: '10:00', status: 'On Time' },
-  { id: 2, flightNumber: '6E456', from: 'BOM', to: 'BLR', departure: '14:30', arrival: '16:15', status: 'Delayed' },
-  { id: 3, flightNumber: 'UK789', from: 'BLR', to: 'DEL', departure: '18:00', arrival: '20:30', status: 'On Time' }
-];
-
-// Root endpoint with welcome message
+// Simple root endpoint
 app.get('/', (req, res) => {
   res.json({
     status: 'success',
-    message: 'Welcome to the MCP Train & Flight Info Server',
+    message: 'MCP Train & Flight Server is running',
     endpoints: {
       mcp: 'POST /mcp - MCP protocol endpoint',
-      health: 'GET /health - Health check',
-      auth: 'GET /api/auth/verify - Verify Bearer token',
-      trains: {
-        searchStations: 'GET /api/trains/stations?query=:query',
-        betweenStations: 'GET /api/trains/between-stations?from=:from&to=:to&date=YYYY-MM-DD',
-        pnrStatus: 'GET /api/trains/pnr/:pnr',
-        trainSchedule: 'GET /api/trains/schedule/:trainNumber',
-        seatAvailability: 'GET /api/trains/check-availability?trainNo=:trainNo&from=:from&to=:to&class=:class&quota=:quota'
-      },
-      flights: {
-        deals: 'GET /api/flights/deals?query=:origin&limit=:limit'
-      }
+      health: 'GET /health - Health check endpoint'
     },
-    version: '1.0.1'
-  });
-});
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'OK', 
-    message: 'MCP Train & Flight Server is running',
-    timestamp: new Date().toISOString(),
-    version: '1.0.1'
-  });
-});
-
-// Get all flights
-app.get('/flights', (req, res) => {
-  res.json({
-    status: true,
-    data: flights
+    version: '1.0.0'
   });
 });
 
