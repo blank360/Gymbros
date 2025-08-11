@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import https from 'https';
-import irctcService from './irctcService.js';
+import { searchStation, searchTrain, getTrainsBetweenStations, getPNRStatus, getTrainSchedule, getTrainsByStation, checkSeatAvailability } from './irctcService.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -40,7 +40,7 @@ app.get('/api/trains/stations', async (req, res) => {
         message: 'Please provide a search query with at least 2 characters' 
       });
     }
-    const result = await irctcService.searchStation(query);
+    const result = await searchStation(query);
     res.json({
       status: true,
       data: result
@@ -71,7 +71,7 @@ app.get('/api/trains/between-stations', async (req, res) => {
     const searchDate = date ? new Date(date) : new Date();
     
     // Get trains between stations with the specified date
-    const trains = await irctcService.getTrainsBetweenStations(from, to, searchDate);
+    const trains = await getTrainsBetweenStations(from, to, searchDate);
     
     res.json({
       status: true,
@@ -97,7 +97,7 @@ app.get('/api/trains/between-stations', async (req, res) => {
 app.get('/api/trains/schedule/:trainNo', async (req, res) => {
   try {
     const { trainNo } = req.params;
-    const schedule = await irctcService.getTrainSchedule(trainNo);
+    const schedule = await getTrainSchedule(trainNo);
     
     res.json({
       status: true,
@@ -126,7 +126,7 @@ app.get('/api/trains/check-availability', async (req, res) => {
       });
     }
 
-    const availability = await irctcService.checkSeatAvailability(
+    const availability = await checkSeatAvailability(
       trainNo, 
       from, 
       to, 
@@ -153,7 +153,7 @@ app.get('/api/trains/check-availability', async (req, res) => {
 app.get('/api/trains/pnr/:pnr', async (req, res) => {
   try {
     const { pnr } = req.params;
-    const status = await irctcService.getPNRStatus(pnr);
+    const status = await getPNRStatus(pnr);
     
     res.json({
       status: true,
