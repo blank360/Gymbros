@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import https from 'https';
 import { searchStation, searchTrain, getTrainsBetweenStations, getPNRStatus, getTrainSchedule, getTrainsByStation, checkSeatAvailability } from './irctcService.js';
+import { auth } from './auth.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,6 +11,15 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// Simple auth endpoint to verify the token is working
+app.get('/api/auth/verify', auth, (req, res) => {
+  res.json({ 
+    status: 'success',
+    message: 'Token is valid',
+    timestamp: new Date().toISOString()
+  });
+});
 
 // Sample flight data (for reference)
 const flights = [
@@ -31,7 +41,7 @@ app.get('/flights', (req, res) => {
 // IRCTC Train API Routes
 
 // Search for stations
-app.get('/api/trains/stations', async (req, res) => {
+app.get('/api/trains/stations', auth, async (req, res) => {
   try {
     const { query } = req.query;
     if (!query || query.length < 2) {
