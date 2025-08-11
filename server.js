@@ -28,6 +28,28 @@ const flights = [
   { id: 3, flightNumber: 'UK789', from: 'BLR', to: 'DEL', departure: '18:00', arrival: '20:30', status: 'On Time' }
 ];
 
+// Root endpoint with welcome message
+app.get('/', (req, res) => {
+  res.json({
+    status: 'success',
+    message: 'Welcome to the Flight & Train Info API',
+    documentation: {
+      health: '/health',
+      auth: {
+        verify: 'GET /api/auth/verify (requires Bearer token)'
+      },
+      trains: {
+        searchStations: 'GET /api/trains/stations?query=:query',
+        betweenStations: 'GET /api/trains/between-stations?from=:from&to=:to&date=YYYY-MM-DD',
+        pnrStatus: 'GET /api/trains/pnr/:pnr',
+        trainSchedule: 'GET /api/trains/schedule/:trainNumber',
+        trainsByStation: 'GET /api/trains/station/:stationCode',
+        seatAvailability: 'GET /api/trains/availability?train=:trainNumber&from=:from&to=:to&class=:class&quota=:quota&date=YYYY-MM-DD'
+      }
+    }
+  });
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', message: 'Service is running' });
