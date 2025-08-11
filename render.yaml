@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: mcp-train-flight-server
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 10000
+      # Add other environment variables here
+      # - key: YOUR_API_KEY
+      #   value: your-api-key-value
