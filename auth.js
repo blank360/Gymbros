@@ -11,7 +11,7 @@ if (!BEARER_TOKEN) {
  * MCP-compliant authentication middleware
  * Validates Bearer token and returns JSON-RPC 2.0 formatted errors
  */
-const mcpAuth = (req, res, next) => {
+export const mcpAuth = (req, res, next) => {
   // Skip auth for initialize and ping methods
   if (req.body?.method === 'initialize' || req.body?.method === 'ping') {
     return next();
@@ -20,7 +20,6 @@ const mcpAuth = (req, res, next) => {
   const authHeader = req.header('Authorization');
   
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    console.log('No Bearer token found in header');
     return res.status(200).json({
       jsonrpc: '2.0',
       error: {
@@ -35,13 +34,12 @@ const mcpAuth = (req, res, next) => {
   const token = authHeader.split(' ')[1];
   
   if (token !== BEARER_TOKEN) {
-    console.log('Invalid token provided');
     return res.status(200).json({
       jsonrpc: '2.0',
       error: {
-        code: -32001,
+        code: -32600,
         message: 'Unauthorized',
-        data: 'Invalid or expired token'
+        data: 'Invalid Bearer token'
       },
       id: req.body?.id || null
     });
@@ -50,31 +48,6 @@ const mcpAuth = (req, res, next) => {
   next();
 };
 
-// Legacy auth middleware (kept for backward compatibility)
-const legacyAuth = (req, res, next) => {
-  const authHeader = req.header('Authorization');
-  
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ 
-      status: 'error',
-      message: 'No token provided. Please include a Bearer token in the Authorization header.'
-    });
-  }
+export { mcpAuth, BEARER_TOKEN };
 
-  const token = authHeader.split(' ')[1];
-  
-  if (token !== BEARER_TOKEN) {
-    return res.status(401).json({ 
-      status: 'error',
-      message: 'Invalid token. Please provide a valid Bearer token.'
-    });
-  }
-
-  next();
-};
-
-// Export all named exports
-export { mcpAuth, legacyAuth, BEARER_TOKEN };
-
-// For backward compatibility, keep the default export as mcpAuth
 export default mcpAuth;
